@@ -570,7 +570,7 @@ TEST SUITE: None
 <h3 id="install-envsubst"><a class="header" href="#install-envsubst">Install <code>envsubst</code></a></h3>
 <p>The deployment YAML contains the environment variables we defined above and we rely on the <code>envsubst</code> binary to substitute them for their respective values before deploying. See <a href="https://github.com/a8m/envsubst#installation">the <code>envsubst</code>‘s installation guide</a> on how to install it.</p>
 <p>Install the webhook using the deployment YAML via <code>kubectl apply -f</code> and <code>envsubst</code>:</p>
-<pre><code class="language-bash">curl -sL https://github.com/Azure/azure-workload-identity/releases/download/v0.11.0/azure-wi-webhook.yaml | envsubst | kubectl apply -f -
+<pre><code class="language-bash">curl -sL https://github.com/Azure/azure-workload-identity/releases/download/v0.13.0/azure-wi-webhook.yaml | envsubst | kubectl apply -f -
 </code></pre>
 <details>
 <summary>Output</summary>
@@ -619,6 +619,7 @@ mutatingwebhookconfiguration.admissionregistration.k8s.io/azure-wi-webhook-mutat
 <p>In this tutorial, we will cover the basics of how to use the webhook to acquire an Azure AD token to access a secret in an <a href="https://azure.microsoft.com/en-us/services/key-vault/">Azure Key Vault</a>.</p>
 <p>Before we get started, ensure the following:</p>
 <ul>
+<li>Azure CLI version 2.39.0 or higher. Run <code>az --version</code> to verify.</li>
 <li>You are logged in with the Azure CLI as a user.
 <ul>
 <li>If you are logged in with a Service Principal, ensure that it has the correct <a href="./known-issues.html#user-tried-to-log-in-to-a-device-from-a-platform-unknown-thats-currently-not-supported-through-conditional-access-policy">API permissions</a> enabled.</li>
@@ -747,12 +748,11 @@ INFO[0032] [federated-identity] added federated credential  objectID=REDACTED su
 <br>
 <details>
 <summary>Azure CLI</summary>
-<p>Login to <a href="https://portal.azure.com/#cloudshell/">Azure Cloud Shell</a> and run the following commands:</p>
 <pre><code class="language-bash"># Get the object ID of the AAD application
 export APPLICATION_OBJECT_ID=&quot;$(az ad app show --id ${APPLICATION_CLIENT_ID} --query id -otsv)&quot;
 </code></pre>
 <p>Add the federated identity credential:</p>
-<pre><code class="language-bash">cat &lt;&lt;EOF &gt; body.json
+<pre><code class="language-bash">cat &lt;&lt;EOF &gt; params.json
 {
   &quot;name&quot;: &quot;kubernetes-federated-credential&quot;,
   &quot;issuer&quot;: &quot;${SERVICE_ACCOUNT_ISSUER}&quot;,
@@ -764,12 +764,13 @@ export APPLICATION_OBJECT_ID=&quot;$(az ad app show --id ${APPLICATION_CLIENT_ID
 }
 EOF
 
-az rest --method POST --uri &quot;https://graph.microsoft.com/beta/applications/${APPLICATION_OBJECT_ID}/federatedIdentityCredentials&quot; --body @body.json
+az ad app federated-credential create --id ${APPLICATION_OBJECT_ID} --parameters @params.json
 </code></pre>
 </details>
 <h2 id="7-deploy-workload"><a class="header" href="#7-deploy-workload">7. Deploy workload</a></h2>
 <p>Deploy a pod that references the service account created in the last step:</p>
-<pre><code class="language-bash">cat &lt;&lt;EOF | kubectl apply -f -
+<pre><code class="language-bash">export KEYVAULT_URL=&quot;$(az keyvault show -g ${RESOURCE_GROUP} -n ${KEYVAULT_NAME} --query properties.vaultUri -o tsv)&quot;
+cat &lt;&lt;EOF | kubectl apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
@@ -783,12 +784,15 @@ spec:
       env:
       - name: KEYVAULT_NAME
         value: ${KEYVAULT_NAME}
+      - name: KEYVAULT_URL
+        value: ${KEYVAULT_URL}
       - name: SECRET_NAME
         value: ${KEYVAULT_SECRET_NAME}
   nodeSelector:
     kubernetes.io/os: linux
 EOF
 </code></pre>
+<p>Note: Newer version of the sample image will only need KEYVAULT_URL variable.</p>
 <blockquote>
 <p>Feel free to swap the msal-go example image above with a list of <a href="./topics/language-specific-examples/msal.html">language-specific examples</a> we provide.</p>
 </blockquote>
@@ -859,7 +863,7 @@ Volumes:
     DownwardAPI:             true
   azure-identity-token: (Injected by the webhook)
     Type:                    Projected (a volume that contains injected data from multiple sources)
-    TokenExpirationSeconds:  86400
+    TokenExpirationSeconds:  3600
 QoS Class:                   BestEffort
 Node-Selectors:              kubernetes.io/os=linux
 Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
@@ -977,12 +981,11 @@ export SERVICE_ACCOUNT_ISSUER=&quot;...&quot; # see section 1.1 on how to get th
   --service-account-issuer-url &quot;${SERVICE_ACCOUNT_ISSUER}&quot;
 </code></pre>
 <h2 id="azure-cli"><a class="header" href="#azure-cli">Azure CLI</a></h2>
-<p>To create a federated identity credential, login to <a href="https://portal.azure.com/#cloudshell/">Azure Cloud Shell</a> and run the following commands:</p>
-<pre><code class="language-bash"># Get the client and object ID of the AAD application
-export APPLICATION_CLIENT_ID=&quot;$(az ad sp list --display-name &quot;${APPLICATION_NAME}&quot; --query '[0].appId' -otsv)&quot;
-export APPLICATION_OBJECT_ID=&quot;$(az ad app show --id &quot;${APPLICATION_CLIENT_ID}&quot; --query id -otsv)&quot;
+<p>A federated identity credential can also be created using the <code>az</code> CLI. This can either be done in a local terminal session, or using <a href="https://portal.azure.com/#cloudshell/">Azure Cloud Shell</a>. Use the <code>az</code> CLI to run the following commands:</p>
+<pre><code class="language-bash"># Get the object ID of the AAD application
+export APPLICATION_OBJECT_ID=&quot;$(az ad app list --display-name &quot;${APPLICATION_NAME}&quot; --query '[0].id' -otsv)&quot;
 
-cat &lt;&lt;EOF &gt; body.json
+cat &lt;&lt;EOF &gt; params.json
 {
   &quot;name&quot;: &quot;kubernetes-federated-identity&quot;,
   &quot;issuer&quot;: &quot;${SERVICE_ACCOUNT_ISSUER}&quot;,
@@ -994,13 +997,13 @@ cat &lt;&lt;EOF &gt; body.json
 }
 EOF
 
-az rest --method POST --uri &quot;https://graph.microsoft.com/beta/applications/${APPLICATION_OBJECT_ID}/federatedIdentityCredentials&quot; --body @body.json
+az ad app federated-credential create --id $APPLICATION_OBJECT_ID --parameters params.json
 </code></pre>
 <p>To delete a federated identity credential, the federated identity credential ID needs to be obtained with the following command:</p>
-<pre><code class="language-bash">az rest --method GET --uri &quot;https://graph.microsoft.com/beta/applications/${APPLICATION_OBJECT_ID}/federatedIdentityCredentials&quot;
+<pre><code class="language-bash">az ad app federated-credential list --id &quot;${APPLICATION_OBJECT_ID}&quot;
 </code></pre>
 <p>Select the desired ID of the federated identity credential and run the following command:</p>
-<pre><code class="language-bash">az rest --method DELETE --uri &quot;https://graph.microsoft.com/beta/applications/${APPLICATION_OBJECT_ID}/federatedIdentityCredentials/${FIC_ID}&quot;
+<pre><code class="language-bash">az ad app federated-credential delete --federated-credential-id $FIC_ID --id $APPLICATION_OBJECT_ID
 </code></pre>
 <h2 id="azure-portal-ui"><a class="header" href="#azure-portal-ui">Azure Portal UI</a></h2>
 <ol>
@@ -1601,6 +1604,9 @@ URI=&quot;https://graph.microsoft.com/v1.0/servicePrincipals/${APPLICATION_OBJEC
 BODY=&quot;{'principalId':'${APPLICATION_OBJECT_ID}','resourceId':'${GRAPH_RESOURCE_ID}','appRoleId':'${APPLICATION_READWRITE_ALL_ID}'}&quot;
 az rest --method post --uri &quot;${URI}&quot; --body &quot;${BODY}&quot; --headers &quot;Content-Type=application/json&quot;
 </code></pre>
+<h3 id="environment-variables-not-injected-into-pods-deployed-in-the-kube-system-namespace-in-an-aks-cluster"><a class="header" href="#environment-variables-not-injected-into-pods-deployed-in-the-kube-system-namespace-in-an-aks-cluster">Environment variables not injected into pods deployed in the kube-system namespace in an AKS cluster</a></h3>
+<p>To protect the stability of the system and prevent custom admission controllers from impacting internal services in the kube-system, namespace AKS has an Admissions Enforcer, which automatically excludes kube-system and AKS internal namespaces. Refer to <a href="https://docs.microsoft.com/en-us/azure/aks/faq#can-admission-controller-webhooks-impact-kube-system-and-internal-aks-namespaces">doc</a> for more details.</p>
+<p>If you’re deploying a pod in the <code>kube-system</code> namespace of an AKS cluster and need the environment variables, projected service account token volume injected by the Azure Workload Identity Mutating Webhook, add the <code>&quot;admissions.enforcer/disabled&quot;: &quot;true&quot;</code> label or annotation in the <a href="https://github.com/Azure/azure-workload-identity/blob/8644a217f09902fa1ac63e05cf04d9a3f3f1ebc3/deploy/azure-wi-webhook.yaml#L206-L235">MutatingWebhookConfiguration</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="development"><a class="header" href="#development">Development</a></h1>
 <ul>
 <li><a href="development.html#setting-up">Setting up</a>
@@ -1626,7 +1632,7 @@ az rest --method post --uri &quot;${URI}&quot; --body &quot;${BODY}&quot; --head
 <li>Prerequisites from <a href="./installation.html#prerequisites">Installation</a></li>
 <li>Install <a href="https://golang.org/dl/">go</a>
 <ul>
-<li>Get the latest patch version for go 1.18.</li>
+<li>Get the latest patch version for go 1.19.</li>
 </ul>
 </li>
 <li>Install <a href="https://stedolan.github.io/jq/">jq</a>
